@@ -21,18 +21,62 @@ vim.api.nvim_create_autocmd("StdinReadPre", {
   end,
 })
 
--- True if any *real* file buffer is loaded (i.e. a session actually restored
--- something), ignoring unlisted scratch/plugin buffers.
-local function has_listed_file_buffer()
+-- First real file buffer loaded (i.e. a session actually restored something),
+-- ignoring unlisted scratch/plugin buffers.
+local function first_listed_file_buffer()
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    local stat = name ~= "" and vim.uv.fs_stat(name) or nil
+
     if vim.fn.buflisted(buf) == 1
       and vim.bo[buf].buftype == ""
-      and vim.api.nvim_buf_get_name(buf) ~= ""
+      and name ~= ""
+      and stat
+      and stat.type == "file"
     then
-      return true
+      return buf
     end
   end
-  return false
+  return nil
+end
+
+local function close_aux_windows()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local ok_cfg, cfg = pcall(vim.api.nvim_win_get_config, win)
+    local buf = vim.api.nvim_win_get_buf(win)
+    local buftype = vim.bo[buf].buftype
+    local filetype = vim.bo[buf].filetype
+
+    local is_float = ok_cfg and cfg.relative ~= ""
+    local is_terminal = buftype == "terminal" or filetype == "toggleterm"
+
+    if is_float or is_terminal then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+end
+
+local function focus_file_buffer(buf)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local win_buf = vim.api.nvim_win_get_buf(win)
+    if win_buf == buf then
+      vim.api.nvim_set_current_win(win)
+      return
+    end
+  end
+
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local win_buf = vim.api.nvim_win_get_buf(win)
+    if vim.bo[win_buf].filetype ~= "neo-tree" then
+      vim.api.nvim_set_current_win(win)
+      vim.api.nvim_win_set_buf(win, buf)
+      return
+    end
+  end
 end
 
 vim.api.nvim_create_autocmd("VimEnter", {
@@ -73,11 +117,13 @@ vim.api.nvim_create_autocmd("VimEnter", {
 
       -- Always show the file tree on the left.
       vim.schedule(function()
+        close_aux_windows()
         vim.cmd("Neotree show left")
-        -- If a session restored real buffers, focus the first one instead of
-        -- leaving the cursor in the tree.
-        if has_listed_file_buffer() then
-          vim.cmd("wincmd l")
+        -- If a session restored a real file buffer, focus it explicitly
+        -- instead of depending on window position.
+        local file_buf = first_listed_file_buffer()
+        if file_buf then
+          focus_file_buffer(file_buf)
         end
       end)
     end)
